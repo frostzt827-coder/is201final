@@ -1,0 +1,12 @@
+.footer{
+    background-color: wheat;
+    position: fixed;
+    text-align: center;
+    font-style: italic;
+    font-size: smaller;
+    left: 0px;
+    right: 0px;
+    bottom: 0px;
+    height: auto;
+    z-index: 2000;
+}

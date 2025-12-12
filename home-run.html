@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Home Run Derby</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Arial', sans-serif; user-select: none; }
+        
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px #000;
+            pointer-events: none;
+            z-index: 10;
+        }
+        /* allow links inside the UI layer to be clickable while keeping other UI elements non-interactive */
+        #ui-layer a {
+            pointer-events: auto;
+            color: white;
+            text-decoration: underline;
+        }
+        h1 { margin: 0; font-size: 24px; letter-spacing: 2px; }
+        #timer { font-size: 30px; font-weight: bold; color: #FFD700; }
+        #score { font-size: 30px; font-weight: bold; color: #fff; }
+        
+        #message {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 40px;
+            font-weight: 900;
+            color: white;
+            text-shadow: 4px 4px 0 #000;
+            display: none;
+            text-align: center;
+            z-index: 20;
+            white-space: pre-wrap;
+            pointer-events: none;
+        }
+
+        #feedback {
+            position: absolute;
+            top: 60%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            font-weight: bold;
+            color: #FF4500;
+            text-shadow: 2px 2px 0 #000;
+            display: none;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        #controls-hint {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <h1><a href="index.html">BACK TO ARTICLE</a></h1>
+    <h1>HOME RUN DERBY</h1>
+    <div>Time: <span id="timer">2:00</span></div>
+    <div>Home Runs: <span id="score">0</span></div>
+</div>
+
+<div id="message"></div>
+<div id="feedback"></div>
+<div id="controls-hint">Press SPACE to Swing</div>
+
+<!-- Import Three.js via CDN -->
+<script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.module.js';
+
+    // --- CONFIGURATION ---
+    const GAME_DURATION = 120; // 2 minutes
+    const PITCH_INTERVAL = 4; // 4 seconds between pitches
+    
+    // --- VARIABLES ---
+    let scene, camera, renderer;
+    let batter, pitcher, bat, ball, batPivot;
+    let field, wall;
+    let isSwinging = false;
+    let ballState = 'idle'; // idle, pitching, hit, scored
+    let ballVelocity = new THREE.Vector3();
+    let score = 0;
+    let gameTime = GAME_DURATION;
+    let nextPitchTime = 0;
+    let gameActive = false;
+    let swingAnimationTime = 0;
+    let lastFrameTime = 0; 
+    let timeSinceHit = 0; 
+    
+    // HTML Elements
+    const timerEl = document.getElementById('timer');
+    const scoreEl = document.getElementById('score');
+    const msgEl = document.getElementById('message');
+    const feedbackEl = document.getElementById('feedback');
+
+    // --- INIT ---
+    function init() {
+        // Scene setup
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        
+        // Camera (Top Down / High Angle)
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 60, 40); 
+        camera.lookAt(0, 0, -15); 
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 100, 50);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        createField();
+        createCharacters();
+        
+        window.addEventListener('resize', onWindowResize);
+        window.addEventListener('keydown', onKeyDown);
+
+        lastFrameTime = performance.now();
+        animate();
+        showMessage("PRESS SPACE\nTO START");
+    }
+
+    // Helper to create ad textures dynamically
+    function createAdTexture(text, bgColor, textColor = '#ffffff') {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+
+        // Background
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(0, 0, 512, 128);
+
+        // Border
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 10;
+        ctx.strokeRect(5, 5, 502, 118);
+
+        // Text
+        ctx.font = 'bold 40px Arial';
+        ctx.fillStyle = textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        // Split text for multiline simple simulation
+        if (text.includes('\n')) {
+            const lines = text.split('\n');
+            ctx.fillText(lines[0], 256, 44);
+            ctx.font = 'bold 30px Arial';
+            ctx.fillText(lines[1], 256, 94);
+        } else {
+            ctx.fillText(text, 256, 64);
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        return texture;
+    }
+
+    function createField() {
+        // Grass
+        const planeGeometry = new THREE.PlaneGeometry(120, 180);
+        const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x3cb371 });
+        field = new THREE.Mesh(planeGeometry, planeMaterial);
+        field.rotation.x = -Math.PI / 2;
+        field.receiveShadow = true;
+        scene.add(field);
+
+        // Dirt Diamond
+        const dirtGeo = new THREE.PlaneGeometry(35, 35);
+        const dirtMat = new THREE.MeshStandardMaterial({ color: 0xD2B48C });
+        const dirt = new THREE.Mesh(dirtGeo, dirtMat);
+        dirt.rotation.x = -Math.PI / 2;
+        dirt.rotation.z = Math.PI / 4; 
+        dirt.position.set(0, 0.05, 0); 
+        dirt.receiveShadow = true;
+        scene.add(dirt);
+
+        // Home Plate
+        const plateGeo = new THREE.PlaneGeometry(2, 2);
+        const plateMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        const plate = new THREE.Mesh(plateGeo, plateMat);
+        plate.rotation.x = -Math.PI / 2;
+        plate.rotation.z = Math.PI / 4;
+        plate.position.set(0, 0.06, 14);
+        scene.add(plate);
+
+        // Foul Lines
+        const lineMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const lineGeo = new THREE.BoxGeometry(0.3, 100, 0.1); 
+        
+        const leftLine = new THREE.Mesh(lineGeo, lineMaterial);
+        leftLine.rotation.x = -Math.PI / 2;
+        leftLine.rotation.z = Math.PI / 4; 
+        leftLine.position.set(-35, 0.07, -21); 
+        scene.add(leftLine);
+
+        const rightLine = new THREE.Mesh(lineGeo, lineMaterial);
+        rightLine.rotation.x = -Math.PI / 2;
+        rightLine.rotation.z = -Math.PI / 4; 
+        rightLine.position.set(35, 0.07, -21);
+        scene.add(rightLine);
+
+        // Pitchers Mound
+        const moundGeo = new THREE.CircleGeometry(3, 32);
+        const moundMat = new THREE.MeshStandardMaterial({ color: 0xD2B48C });
+        const mound = new THREE.Mesh(moundGeo, moundMat);
+        mound.rotation.x = -Math.PI / 2;
+        mound.position.set(0, 0.06, -10);
+        scene.add(mound);
+
+        // Outfield Wall
+        const wallGroup = new THREE.Group();
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x003366 });
+        
+        // --- WALL SEGMENTS ---
+        const centerWall = new THREE.Mesh(new THREE.BoxGeometry(60, 8, 2), wallMat);
+        centerWall.position.set(0, 4, -70);
+        wallGroup.add(centerWall);
+        
+        const leftWall = new THREE.Mesh(new THREE.BoxGeometry(40, 8, 2), wallMat);
+        leftWall.position.set(-45, 4, -60);
+        leftWall.rotation.y = Math.PI / 8;
+        wallGroup.add(leftWall);
+
+        const rightWall = new THREE.Mesh(new THREE.BoxGeometry(40, 8, 2), wallMat);
+        rightWall.position.set(45, 4, -60);
+        rightWall.rotation.y = -Math.PI / 8;
+        wallGroup.add(rightWall);
+        
+        // --- FUNNY ADS ---
+        // Ad 1: Center
+        const ad1Tex = createAdTexture("TARGET PRACTICE", "#8B0000");
+        const ad1 = new THREE.Mesh(new THREE.PlaneGeometry(30, 6), new THREE.MeshBasicMaterial({ map: ad1Tex }));
+        ad1.position.set(0, 4, -68.9); // Slightly in front of wall
+        wallGroup.add(ad1);
+
+        // Ad 2: Left
+        const ad2Tex = createAdTexture("BOB'S WINDOW REPAIR\nYou smash it, we cash it.", "#2E8B57");
+        const ad2 = new THREE.Mesh(new THREE.PlaneGeometry(25, 5), new THREE.MeshBasicMaterial({ map: ad2Tex }));
+        ad2.position.set(-45, 4, -58.9); 
+        ad2.rotation.y = Math.PI / 8;
+        wallGroup.add(ad2);
+
+        // Ad 3: Right
+        const ad3Tex = createAdTexture("FREE HOT DOGS\n(Tomorrow Only)", "#DAA520", "#000000");
+        const ad3 = new THREE.Mesh(new THREE.PlaneGeometry(25, 5), new THREE.MeshBasicMaterial({ map: ad3Tex }));
+        ad3.position.set(45, 4, -58.9);
+        ad3.rotation.y = -Math.PI / 8;
+        wallGroup.add(ad3);
+
+        // Foul Poles
+        const poleGeo = new THREE.CylinderGeometry(0.5, 0.5, 30);
+        const poleMat = new THREE.MeshBasicMaterial({ color: 0xFFFF00 });
+        const leftPole = new THREE.Mesh(poleGeo, poleMat);
+        leftPole.position.set(-60, 15, -45);
+        wallGroup.add(leftPole);
+        const rightPole = new THREE.Mesh(poleGeo, poleMat);
+        rightPole.position.set(60, 15, -45);
+        wallGroup.add(rightPole);
+
+        scene.add(wallGroup);
+    }
+
+    function createCharacters() {
+        const batterGroup = new THREE.Group();
+        const bodyGeo = new THREE.CapsuleGeometry(1.2, 3, 4, 8);
+        
+        // Giants Orange for Batter
+        const batterMat = new THREE.MeshStandardMaterial({ color: 0xFD5A1E }); 
+        const body = new THREE.Mesh(bodyGeo, batterMat);
+        body.position.y = 2.5;
+        batterGroup.add(body);
+        
+        const headGeo = new THREE.SphereGeometry(1, 16, 16);
+        const skinMat = new THREE.MeshStandardMaterial({ color: 0xFFDAB9 });
+        const head = new THREE.Mesh(headGeo, skinMat);
+        head.position.y = 5.2;
+        batterGroup.add(head);
+        
+        const helmGeo = new THREE.SphereGeometry(1.1, 16, 16, 0, Math.PI * 2, 0, Math.PI/2);
+        const helmMat = new THREE.MeshStandardMaterial({ color: 0xFD5A1E });
+        const helmet = new THREE.Mesh(helmGeo, helmMat);
+        helmet.position.y = 5.3;
+        batterGroup.add(helmet);
+        
+        batterGroup.position.set(-3.5, 0, 14); 
+        batterGroup.castShadow = true;
+        scene.add(batterGroup);
+
+        batPivot = new THREE.Group();
+        batPivot.position.set(-3.5, 3.5, 14);
+        scene.add(batPivot);
+        const batGeo = new THREE.CylinderGeometry(0.15, 0.3, 4.5);
+        const batMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        bat = new THREE.Mesh(batGeo, batMat);
+        bat.position.set(0, 2, 0); 
+        batPivot.rotation.z = Math.PI / 1.8;
+        batPivot.rotation.x = Math.PI / 4; 
+        batPivot.add(bat);
+
+        const pitcherGroup = new THREE.Group();
+        // Dodgers Blue for Pitcher
+        const pitcherBody = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({ color: 0x005A9C }));
+        pitcherBody.position.y = 2.5;
+        pitcherGroup.add(pitcherBody);
+        
+        const pitcherHead = new THREE.Mesh(headGeo, skinMat);
+        pitcherHead.position.y = 5.2;
+        pitcherGroup.add(pitcherHead);
+        
+        const cap = new THREE.Mesh(helmGeo, new THREE.MeshStandardMaterial({ color: 0x005A9C }));
+        cap.position.y = 5.3;
+        pitcherGroup.add(cap);
+        
+        pitcherGroup.position.set(0, 0, -10);
+        scene.add(pitcherGroup);
+
+        const ballGeo = new THREE.SphereGeometry(0.35, 16, 16);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        ball = new THREE.Mesh(ballGeo, ballMat);
+        ball.position.set(0, -10, 0); 
+        ball.castShadow = true;
+        scene.add(ball);
+    }
+
+    function startGame() {
+        if (gameActive) return;
+        gameActive = true;
+        score = 0;
+        scoreEl.innerText = score;
+        gameTime = GAME_DURATION;
+        nextPitchTime = performance.now() + 1000; 
+        showMessage("PLAY BALL!");
+        setTimeout(() => {
+            if(gameActive) msgEl.style.display = 'none';
+        }, 1500);
+    }
+
+    function throwPitch() {
+        if (!gameActive) return;
+        ballState = 'pitching';
+        ball.position.set(0, 5, -10); 
+        // Throw towards strike zone (0, 3, 14)
+        ballVelocity.set(0, -0.06, 0.38); 
+    }
+
+    function onKeyDown(event) {
+        if (event.code === 'Space') {
+            if (!gameActive && gameTime === GAME_DURATION) {
+                startGame();
+            } else {
+                swing();
+            }
+        }
+        if (event.code === 'KeyR' && !gameActive) {
+            gameTime = GAME_DURATION;
+            startGame();
+        }
+    }
+
+    function swing() {
+        if (isSwinging || !gameActive) return;
+        isSwinging = true;
+        swingAnimationTime = 0;
+
+        // Hit Detection Logic
+        if (ballState === 'pitching') {
+            const ballZ = ball.position.z;
+            const distZ = Math.abs(ballZ - 14);
+            const distX = Math.abs(ball.position.x);
+            
+            // Sweet spot logic
+            if (distZ < 3.5 && distX < 2.0) {
+                hitBall(distZ);
+            } else {
+                showFeedback(ballZ < 14 ? "TOO EARLY" : "TOO LATE");
+            }
+        }
+    }
+
+    function hitBall(offset) {
+        ballState = 'hit';
+        timeSinceHit = 0;
+        
+        let power = 0;
+        let lift = 0;
+        let sideAngle = (Math.random() - 0.5) * 0.5;
+
+        const zPos = ball.position.z;
+        let feedback = "";
+        
+        if (offset < 0.8) {
+            power = 1.0 + (Math.random() * 0.2);
+            lift = 0.6 + (Math.random() * 0.2);
+            feedback = "PERFECT!";
+        } else if (offset < 2.0) {
+            power = 0.7;
+            lift = 0.4;
+            feedback = zPos < 14 ? "EARLY" : "LATE";
+        } else {
+            power = 0.4;
+            lift = 0.2;
+            sideAngle = (Math.random() > 0.5 ? 1 : -1) * 0.8; // Foul
+            feedback = zPos < 14 ? "TOO EARLY" : "TOO LATE";
+        }
+
+        ballVelocity.set(sideAngle, lift, -power);
+        showMessage(feedback === "PERFECT!" ? "PERFECT!" : "");
+        if (feedback !== "PERFECT!") showFeedback(feedback);
+    }
+
+    function showMessage(text) {
+        msgEl.innerText = text;
+        msgEl.style.display = 'block';
+    }
+
+    function showFeedback(text) {
+        feedbackEl.innerText = text;
+        feedbackEl.style.display = 'block';
+        feedbackEl.style.opacity = 1;
+        setTimeout(() => {
+            feedbackEl.style.display = 'none';
+        }, 1000);
+    }
+
+    function resetBall() {
+        ballState = 'idle';
+        ball.position.y = -10;
+        ballVelocity.set(0,0,0);
+        msgEl.style.display = 'none';
+    }
+
+    function updatePhysics(dt) {
+        if (!gameActive) return;
+
+        // Pitch Logic
+        if (ballState === 'pitching') {
+            ball.position.add(ballVelocity);
+            
+            if (ball.position.z > 20) {
+                resetBall();
+                showMessage("STRIKE!");
+                setTimeout(() => { if(gameActive && ballState !== 'hit') msgEl.style.display = 'none'; }, 1000);
+            }
+        }
+        // Hit Logic
+        else if (ballState === 'hit' || ballState === 'scored') {
+            ball.position.add(ballVelocity);
+            ballVelocity.y -= 0.012; // Gravity
+            timeSinceHit += dt;
+
+            // Ground bounce
+            if (ball.position.y <= 0.35) {
+                ball.position.y = 0.35;
+                ballVelocity.y *= -0.5;
+                ballVelocity.z *= 0.8; // Friction
+                ballVelocity.x *= 0.8;
+            }
+
+            const speed = ballVelocity.lengthSq();
+            if (timeSinceHit > 5.0 || (timeSinceHit > 1.0 && speed < 0.0001)) {
+                resetBall();
+            }
+
+            // Check Home Run
+            if (ballState === 'hit' && ball.position.z < -65 && ball.position.y > 5 && Math.abs(ball.position.x) < 50) {
+                ballState = 'scored'; 
+                score++;
+                scoreEl.innerText = score;
+                showMessage("HOME RUN!");
+                setTimeout(() => { if(gameActive) msgEl.style.display = 'none'; }, 2000);
+            } 
+            else if (ball.position.z < -100 || ball.position.z > 50 || Math.abs(ball.position.x) > 60) {
+                 resetBall();
+            }
+        }
+    }
+
+    function updateBat() {
+        if (isSwinging) {
+            swingAnimationTime += 0.2;
+            const startRot = Math.PI / 1.8;
+            const endRot = -Math.PI / 1.5;
+            
+            if (swingAnimationTime <= Math.PI) {
+                 batPivot.rotation.z = startRot - ( (startRot - endRot) * (swingAnimationTime / Math.PI) );
+                 batPivot.rotation.x = Math.PI/4 - ( (Math.PI/4) * (swingAnimationTime / Math.PI) );
+            } else {
+                isSwinging = false;
+                batPivot.rotation.z = Math.PI / 1.8;
+                batPivot.rotation.x = Math.PI / 4;
+            }
+        }
+    }
+
+    function updateGameLogic(dt) {
+        if (!gameActive) return;
+
+        const now = performance.now();
+        gameTime -= dt;
+        
+        let minutes = Math.floor(gameTime / 60);
+        let seconds = Math.floor(gameTime % 60);
+        if (minutes < 0) { minutes = 0; seconds = 0; }
+        timerEl.innerText = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+
+        if (gameTime <= 0) {
+            gameActive = false;
+            timerEl.innerText = "0:00";
+            showMessage("GAME OVER\nPress R to Restart");
+        }
+
+        if (now > nextPitchTime && gameActive && ballState === 'idle') {
+            throwPitch();
+            nextPitchTime = now + (PITCH_INTERVAL * 1000);
+        }
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+        lastFrameTime = now;
+
+        updatePhysics(dt);
+        updateBat();
+        updateGameLogic(dt);
+
+        renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    init();
+</script>
+</body>
+</html>
